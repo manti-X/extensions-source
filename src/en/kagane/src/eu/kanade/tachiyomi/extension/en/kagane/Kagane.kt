@@ -290,8 +290,8 @@ class Kagane : HttpSource(), ConfigurableSource {
     private val fairPlayCertificate by lazy { getCertificate("$apiUrl/api/v1/static/crt.crt") }
 
     override fun fetchPageList(chapter: SChapter): Observable<List<Page>> {
-        if (chapter.url.count { it == ';' } != 2) throw Exception("Chapter url error, please refresh chapter list.")
-        var (seriesId, chapterId, pageCount) = chapter.url.split(";")
+        if (chapter.url.count { it == ';' } != 1) throw Exception("Chapter url error, please refresh chapter list.")
+        var (seriesId, chapterId) = chapter.url.split(";")
 
         val challengeResp = getChallengeResponse(seriesId, chapterId)
         accessToken = challengeResp.accessToken
@@ -300,18 +300,20 @@ class Kagane : HttpSource(), ConfigurableSource {
             chapterId = chapterId + "_ds"
         }
 
-        val pages = (0 until pageCount.toInt()).map { page ->
-            val pageUrl = "$cacheUrl/api/v1/books".toHttpUrl().newBuilder().apply {
-                addPathSegment(seriesId)
-                addPathSegment("file")
-                addPathSegment(chapterId)
-                addPathSegment(challengeResp.pageMapping.getValue(page + 1))
-                addQueryParameter("token", accessToken)
-                addQueryParameter("index", (page + 1).toString())
-            }.build().toString()
+        val pages = challengeResp.pageMapping.entries
+            .sortedBy { it.key }
+            .mapIndexed { page, entry ->
+                val pageUrl = "$cacheUrl/api/v1/books".toHttpUrl().newBuilder().apply {
+                    addPathSegment(seriesId)
+                    addPathSegment("file")
+                    addPathSegment(chapterId)
+                    addPathSegment(entry.value)
+                    addQueryParameter("token", accessToken)
+                    addQueryParameter("index", entry.key.toString())
+                }.build().toString()
 
-            Page(page, imageUrl = pageUrl)
-        }
+                Page(page, imageUrl = pageUrl)
+            }
 
         return Observable.just(pages)
     }
