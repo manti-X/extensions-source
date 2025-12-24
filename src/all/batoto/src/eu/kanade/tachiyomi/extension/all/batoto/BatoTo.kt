@@ -651,7 +651,7 @@ open class BatoTo(
         // This is critical; otherwise, new requests in the loop may hang or fail.
         response.close()
 
-        if (SERVER_PATTERN.containsMatchIn(urlString)) {
+        if (SERVER_PATTERN.containsMatchIn(urlString) || request.url.pathSegments.contains("media")) {
             // Sorted list: Most reliable servers FIRST
             val servers = listOf("k03", "k06", "k07", "k00", "k01", "k02", "k04", "k05", "k08", "k09", "n03", "n00", "n01", "n02", "n04", "n05", "n06", "n07", "n08", "n09", "n10")
 
