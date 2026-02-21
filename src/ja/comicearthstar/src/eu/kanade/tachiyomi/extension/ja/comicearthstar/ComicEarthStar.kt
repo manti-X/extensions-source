@@ -11,7 +11,6 @@ import keiyoushi.utils.toJsonString
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
-import java.util.Calendar
 import java.util.TimeZone
 
 class ComicEarthStar :
@@ -19,8 +18,8 @@ class ComicEarthStar :
         "Comic Earth Star",
         "https://comic-earthstar.com",
         "ja",
+        "Earthstar",
     ) {
-    private val apiUrl = "$baseUrl/graphql"
     private val jst = TimeZone.getTimeZone("Asia/Tokyo")
 
     override val supportsLatest = false
@@ -30,34 +29,8 @@ class ComicEarthStar :
         return POST(apiUrl, headers, payload)
     }
 
-    override fun popularMangaRequest(page: Int): Request {
-        val cal = Calendar.getInstance(jst)
-        cal.set(Calendar.DAY_OF_WEEK, Calendar.THURSDAY)
-        cal.set(Calendar.HOUR_OF_DAY, 18)
-        cal.set(Calendar.MINUTE, 0)
-        cal.set(Calendar.SECOND, 0)
-        cal.set(Calendar.MILLISECOND, 0)
-
-        if (Calendar.getInstance(jst).time.before(cal.time)) {
-            cal.add(Calendar.DATE, -7)
-        }
-
-        val since = cal.time
-        cal.add(Calendar.DATE, 7)
-        val until = cal.time
-
-        val variables = mapOf(
-            "latestUpdatedSince" to dateFormat.format(since),
-            "latestUpdatedUntil" to dateFormat.format(until),
-        )
-
-        return apiRequest("Earthstar_LatestUpdates", variables, LATEST_QUERY)
-    }
-
-    override fun popularMangaParse(response: Response): MangasPage {
-        val results = response.parseAs<LatestResponse>().data.serialGroup.latestUpdatedSeriesEpisodes.map { it.toSManga() }
-        return MangasPage(results, false)
-    }
+    override fun popularMangaRequest(page: Int): Request = latestUpdatesRequest(page)
+    override fun popularMangaParse(response: Response): MangasPage = latestUpdatesParse(response)
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
         if (query.isNotEmpty()) {

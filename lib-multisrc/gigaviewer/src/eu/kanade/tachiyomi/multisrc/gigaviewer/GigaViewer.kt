@@ -4,6 +4,7 @@ import android.content.SharedPreferences
 import androidx.preference.PreferenceScreen
 import androidx.preference.SwitchPreferenceCompat
 import eu.kanade.tachiyomi.network.GET
+import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
@@ -16,51 +17,47 @@ import eu.kanade.tachiyomi.util.asJsoup
 import keiyoushi.utils.firstInstance
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
+import keiyoushi.utils.toJsonString
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
-import okhttp3.ResponseBody.Companion.toResponseBody
 import org.jsoup.nodes.Element
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
 import java.util.TimeZone
+import kotlin.text.set
 
 // GigaViewer Sources: https://hatena.co.jp/solutions/gigaviewer
 abstract class GigaViewer(
     override val name: String,
     override val baseUrl: String,
     override val lang: String,
+    queryName: String,
 ) : HttpSource(),
     ConfigurableSource {
+    protected open val apiUrl = "$baseUrl/graphql"
     protected open val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.ROOT).apply { timeZone = TimeZone.getTimeZone("UTC") }
     protected open val dayTimeZone = TimeZone.getTimeZone("Asia/Tokyo")!!
     protected open val preferences: SharedPreferences by getPreferencesLazy()
+    protected open val queries = Queries(queryName)
+    protected open val latestGroupName = "トップ：更新作品"
     protected open val dayOfWeek: String by lazy {
         Calendar.getInstance(dayTimeZone)
             .getDisplayName(Calendar.DAY_OF_WEEK, Calendar.LONG, Locale.US)!!
             .lowercase(Locale.US)
     }
 
+    protected inline fun <reified T> graphQLRequest(operationName: String, variables: T, query: String): Request {
+        val payload = Payload(operationName, variables, query).toJsonString().toRequestBody()
+        return POST(apiUrl, headers, payload)
+    }
+
     override val supportsLatest = true
 
     override val client = network.cloudflareClient.newBuilder()
         .addInterceptor(ImageInterceptor())
-        .addInterceptor {
-            // Search returns 404 when no results are found.
-            val request = it.request()
-            val response = it.proceed(request)
-            if (response.code == 404 && request.url.pathSegments.contains(searchPathSegment)) {
-                response.close()
-                return@addInterceptor response.newBuilder()
-                    .code(200)
-                    .message("OK")
-                    .body("".toResponseBody("text/html".toMediaType()))
-                    .build()
-            }
-            response
-        }
         .build()
 
     override fun headersBuilder() = super.headersBuilder()
@@ -87,13 +84,33 @@ abstract class GigaViewer(
     }
 
     // Latest
-    override fun latestUpdatesRequest(page: Int): Request = popularMangaRequest(page)
+    override fun latestUpdatesRequest(page: Int): Request {
+        val cal = Calendar.getInstance(dayTimeZone)
+        cal.set(Calendar.DAY_OF_WEEK, Calendar.THURSDAY)
+        cal.set(Calendar.HOUR_OF_DAY, 18)
+        cal.set(Calendar.MINUTE, 0)
+        cal.set(Calendar.SECOND, 0)
+        cal.set(Calendar.MILLISECOND, 0)
+
+        if (Calendar.getInstance(dayTimeZone).time.before(cal.time)) {
+            cal.add(Calendar.DATE, -7)
+        }
+
+        val since = cal.time
+        cal.add(Calendar.DATE, 7)
+        val until = cal.time
+
+        val variables = mapOf(
+            "latestUpdatedSince" to dateFormat.format(since),
+            "latestUpdatedUntil" to dateFormat.format(until),
+        )
+
+        return graphQLRequest("${queries.operationPrefix}_LatestUpdates", variables, queries.latestQuery(latestGroupName))
+    }
 
     override fun latestUpdatesParse(response: Response): MangasPage {
-        val document = response.asJsoup()
-        val mangas = document.select(latestUpdatesSelector).map(::latestUpdatesFromElement)
-        val hasNextPage = latestUpdatesNextPageSelector?.let { document.selectFirst(it) != null } ?: false
-        return MangasPage(mangas, hasNextPage)
+        val results = response.parseAs<LatestResponse>().data.serialGroup.latestUpdatedSeriesEpisodes.map { it.toSManga() }
+        return MangasPage(results, false)
     }
 
     protected open val latestUpdatesSelector: String = "h2.series-list-date-week.$dayOfWeek + ul.series-list li a"
@@ -290,5 +307,9 @@ abstract class GigaViewer(
     companion object {
         private const val HIDE_LOCKED_PREF_KEY = "hide_locked"
         private const val HIDE_UNAVAILABLE_PREF_KEY = "hide_unavailable"
+        private const val SEARCH_QUERY = $$"query Common_Search($keyword: String!) { searchSeries(keyword: $keyword) { edges { node { title thumbnailUri firstEpisode { permalink } } } } }"
+        private const val ONESHOT_QUERY = "query Earthstar_Oneshot { serialGroup(groupName: \"連載・読切：読切作品\") { seriesSlice { seriesList { ...Earthstar_SeriesListItem_Series } } } } fragment Earthstar_SeriesListItem_Series on Series { thumbnailUri title firstEpisode { permalink } }"
+        private const val ONGOING_QUERY = "query Earthstar_SeriesOngoing { serialGroup(groupName: \"連載・読切：連載作品：連載中\") { seriesSlice { seriesList { ...Earthstar_SeriesListItem_Series } } } } fragment Earthstar_SeriesListItem_Series on Series { thumbnailUri title firstEpisode { permalink } }"
+        private const val FINISHED_QUERY = "query Earthstar_SeriesFinished { serialGroup(groupName: \"連載・読切：連載作品：連載終了\") { seriesSlice { seriesList { ...Earthstar_SeriesListItem_Series } } } } fragment Earthstar_SeriesListItem_Series on Series { thumbnailUri title firstEpisode { permalink } }"
     }
 }
