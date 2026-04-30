@@ -222,17 +222,20 @@ class MangaKingdom :
     override fun pageListParse(response: Response): List<Page> {
         val url = response.request.url
         response.close()
-        val ticket = url.queryParameter("p0") ?: throw Exception("Log in via WebView and purchase this product.")
+        val ticket = url.queryParameter("p0")!!
         val obfuid = url.queryParameter("p1")!!
         val headerUrl = buildViewerUrl(ticket, "64kb_QVGA_h", obfuid, "header")
-        val header = client.newCall(GET(headerUrl, headers)).execute().parseAs<HeaderResponse> { stripJson(it) }
-        return (1..header.numOfScenes).map { sceneNo ->
-            val info = header.contentInfos.first { sceneNo in it.startSceneNo..it.endSceneNo }
-            val pageUrl = buildViewerUrl(ticket, info.name, obfuid, "content", header.dk).newBuilder()
-                .fragment("scene=$sceneNo")
-                .build()
-                .toString()
-            Page(sceneNo - 1, imageUrl = pageUrl)
+        val header = client.newCall(GET(headerUrl, desktopHeaders)).execute().parseAs<HeaderResponse> { stripJson(it) }
+        return header.contentInfos.flatMap {
+            (it.startSceneNo..it.endSceneNo).map { sceneNo ->
+                val pageUrl = buildViewerUrl(ticket, it.name, obfuid, "content", header.dk).newBuilder()
+                    .fragment("scene=$sceneNo")
+                    .build()
+                    .toString()
+                pageUrl
+            }
+        }.mapIndexed { i, url ->
+            Page(i, imageUrl = url)
         }
     }
 

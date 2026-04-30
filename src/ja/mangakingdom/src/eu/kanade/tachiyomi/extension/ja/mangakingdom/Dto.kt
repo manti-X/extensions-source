@@ -31,6 +31,6 @@ class Scene(
 class SceneImage(
     val width: Int,
     val height: Int,
-    val key: Int = 0,
-    val imgBase64: String?,
+    val key: Int,
+    val imgBase64: String,
 )

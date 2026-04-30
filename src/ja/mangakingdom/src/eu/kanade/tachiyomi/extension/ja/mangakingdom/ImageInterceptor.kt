@@ -28,18 +28,13 @@ class ImageInterceptor : Interceptor {
         val image = content.scenes.first { it.sceneNo == sceneNo }.images.first()
         val rawBytes = Base64.decode(image.imgBase64, Base64.DEFAULT)
         val buffer = Buffer()
-
-        if (image.key <= 0) {
-            buffer.write(rawBytes)
-        } else {
-            val bitmap = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size)
-            val result = unscramble(bitmap, image.key, image.width, image.height)
-            bitmap.recycle()
-            result.compress(Bitmap.CompressFormat.JPEG, 90, buffer.outputStream())
-            result.recycle()
-        }
-
+        val bitmap = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size)
+        val result = unscramble(bitmap, image.key, image.width, image.height)
+        bitmap.recycle()
+        result.compress(Bitmap.CompressFormat.JPEG, 90, buffer.outputStream())
+        result.recycle()
         val body = buffer.asResponseBody(JPEG_MEDIA_TYPE, buffer.size)
+
         return Response.Builder()
             .request(request)
             .protocol(Protocol.HTTP_1_1)
