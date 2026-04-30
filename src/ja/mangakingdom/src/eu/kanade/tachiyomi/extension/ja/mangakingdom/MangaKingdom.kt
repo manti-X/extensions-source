@@ -67,7 +67,7 @@ class MangaKingdom :
             .addQueryParameter("search_option[new]", "0")
             .addQueryParameter("search_option[pvfv_flag]", "0")
             .addQueryParameter("search_option[finished_flag]", "0")
-            .addQueryParameter("page", (page + 24).toString())
+            .addQueryParameter("page", page.toString())
             .build()
         return GET(url, desktopHeaders)
     }
