@@ -2,12 +2,12 @@ package eu.kanade.tachiyomi.extension.all.mangaup
 
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import keiyoushi.utils.tryParse
+import keiyoushi.utils.tryParseDate
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.protobuf.ProtoNumber
-import java.text.SimpleDateFormat
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
-import java.util.TimeZone
 
 @Serializable
 class PopularResponse(
@@ -103,13 +103,11 @@ class MangaChapter(
             title += " [Final]"
         }
         name = if (price != null) "🔒 $title" else title
-        date_upload = dateFormat.tryParse(dateStr)
+        date_upload = dateFormat.tryParseDate(dateStr)
     }
 }
 
-private val dateFormat = SimpleDateFormat("MMM dd, yyyy", Locale.US).apply {
-    timeZone = TimeZone.getTimeZone("Asia/Tokyo")
-}
+private val dateFormat = DateTimeFormatter.ofPattern("MMM dd, yyyy", Locale.US).withZone(ZoneId.of("Asia/Tokyo"))
 
 @Serializable
 class ViewerResponse(
