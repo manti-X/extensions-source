@@ -1,5 +1,7 @@
 package eu.kanade.tachiyomi.extension.all.mangaup
 
+import android.text.InputType
+import androidx.preference.EditTextPreference
 import androidx.preference.PreferenceScreen
 import androidx.preference.SwitchPreferenceCompat
 import eu.kanade.tachiyomi.source.ConfigurableSource
@@ -40,6 +42,9 @@ abstract class MangaUp :
     private val imgUrl = "https://global-img.$domain"
     private val preferences by getPreferencesLazy()
     private val secretMutex = Mutex()
+    private val manualSecret: String
+        get() = preferences.getString(SECRET_PREF, "")!!
+
     private var secret: String? = null
     private var rejectedSecret: String? = null
 
@@ -48,6 +53,11 @@ abstract class MangaUp :
         addInterceptor { chain ->
             val request = chain.request()
             val response = chain.proceed(request)
+
+            if (response.code == 500 && manualSecret.isNotBlank()) {
+                response.close()
+                throw IOException("Invalid Secret")
+            }
 
             // 410: expired secret -> device got removed OR more than 3 secrets/devices active, oldest one expires
             // 401: invalid secret -> login was aborted; UA mismatch from previous login
@@ -75,14 +85,19 @@ abstract class MangaUp :
 
     private suspend fun fetchSecret(): String? = secretMutex.withLock { fetchSecretLocked() }
 
-    private suspend fun fetchSecretLocked(): String? = secret ?: getLocalStorage(baseUrl, "secret")
-        ?.takeIf { it.isNotBlank() && it != rejectedSecret }
-        ?.also { secret = it }
+    private suspend fun fetchSecretLocked(): String? {
+        val manual = manualSecret
+        if (manual.isNotBlank()) return manual.takeIf { it != rejectedSecret }
+
+        return secret ?: getLocalStorage(baseUrl, "secret")
+            ?.takeIf { it.isNotBlank() && it != rejectedSecret }
+            ?.also { secret = it }
+    }
 
     private suspend fun refreshSecret(failed: String?): String? = secretMutex.withLock {
         if (failed != null) {
             rejectedSecret = failed
-            flushSecret(failed)
+            if (failed != manualSecret) flushSecret(failed)
             if (secret == failed) secret = null
         }
         fetchSecretLocked()
@@ -266,10 +281,21 @@ abstract class MangaUp :
             summary = "Hide chapters that require points to unlock."
             setDefaultValue(false)
         }.also(screen::addPreference)
+
+        EditTextPreference(screen.context).apply {
+            key = SECRET_PREF
+            title = "Secret Token"
+            summary = "Paste your token here to log in with it directly.\n" +
+                "Leave empty to log in through WebView."
+            setOnBindEditTextListener {
+                it.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            }
+        }.also(screen::addPreference)
     }
 
     companion object {
         private const val HIDE_PAID_PREF = "hide_paid_chapters"
+        private const val SECRET_PREF = "secret_token"
         private const val FAVORITES = "favorites"
         private const val HISTORY = "history"
 
