@@ -239,7 +239,7 @@ abstract class MangaUp :
             .filterNot { it.url.contains("tutorial") }
 
         if (pages.isEmpty()) {
-            throw Exception("Log in via WebView and purchase this chapter")
+            throw Exception("Log in via WebView and purchase this chapter to read.")
         }
 
         return pages.mapIndexed { i, page ->
