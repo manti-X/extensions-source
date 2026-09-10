@@ -20,12 +20,13 @@ import keiyoushi.utils.firstInstance
 import keiyoushi.utils.getLocalStorage
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAsProto
-import keiyoushi.utils.runWebView
+import keiyoushi.utils.runWebViewBlocking
 import keiyoushi.utils.toJsonString
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonElement
+import okhttp3.Call
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
@@ -65,7 +66,8 @@ abstract class MangaUp :
             response.close()
 
             val failed = request.url.queryParameter("secret")
-            val newSecret = runBlocking { refreshSecret(failed) }
+            if (failed != null) rejectSecret(chain.call(), failed)
+            val newSecret = runBlocking { fetchSecret() }
 
             if (newSecret == null && request.url.pathSegments.last() == "my_page") {
                 throw IOException("Log in via WebView to access your ${request.url.fragment}.")
@@ -94,18 +96,19 @@ abstract class MangaUp :
             ?.also { secret = it }
     }
 
-    private suspend fun refreshSecret(failed: String?): String? = secretMutex.withLock {
-        if (failed != null) {
-            rejectedSecret = failed
-            if (failed != manualSecret) flushSecret(failed)
-            if (secret == failed) secret = null
+    private fun rejectSecret(call: Call, failed: String) {
+        val flush = runBlocking {
+            secretMutex.withLock {
+                rejectedSecret = failed
+                if (secret == failed) secret = null
+                failed != manualSecret
+            }
         }
-        fetchSecretLocked()
-    }
 
-    private suspend fun flushSecret(failed: String) {
+        if (!flush) return
+
         runCatching {
-            runWebView(timeout = 10.seconds) {
+            runWebViewBlocking(call, timeout = 10.seconds) {
                 onPageFinished {
                     val script = "if(localStorage.getItem('secret')===${failed.toJsonString()}){localStorage.removeItem('secret')}"
                     evaluateJs(script) { resolve(Unit) }
