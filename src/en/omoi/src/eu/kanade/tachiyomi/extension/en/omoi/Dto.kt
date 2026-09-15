@@ -5,8 +5,11 @@ import eu.kanade.tachiyomi.source.model.SManga
 import keiyoushi.utils.tryParse
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import java.text.SimpleDateFormat
-import kotlin.text.replace
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlin.time.Instant
+
+private val COVER_WIDTH_REGEX = Regex("""/\d+_""")
 
 @Serializable
 class DetailsDto(
@@ -23,9 +26,9 @@ class DetailsDto(
     @SerialName("alt_titles") private val altTitles: List<AltTitle>?,
 ) {
     fun toSManga(): SManga = SManga.create().apply {
-        url = "$slug#$uuid"
+        url = uuid
         title = name
-        thumbnail_url = image?.webp?.maxBy { it.width }?.url?.replace(Regex("""/\d+_"""), "/2400_")
+        thumbnail_url = image?.maxResUrl()?.replace(COVER_WIDTH_REGEX, "/2400_")
         author = creators?.joinToString { it.name }
         description = buildString {
             append(shortDescription)
@@ -42,15 +45,20 @@ class DetailsDto(
                 append("\n\n$releaseSchedule")
             }
         }
-        genre = tags?.joinToString { it }
+        genre = tags?.joinToString()
         status = if (isComplete == true) SManga.COMPLETED else SManga.ONGOING
+        memo = buildJsonObject {
+            put("slug", slug)
+        }
     }
 }
 
 @Serializable
 class Image(
-    val webp: List<Webp>,
-)
+    private val webp: List<Webp>,
+) {
+    fun maxResUrl() = webp.maxBy { it.width }.url
+}
 
 @Serializable
 class Webp(
@@ -71,6 +79,7 @@ class AltTitle(
 @Serializable
 class ChapterDto(
     val chapters: List<Chapter>,
+    @SerialName("volume_uuid_to_volume") val volumes: Map<String, Volume>,
 )
 
 @Serializable
@@ -78,20 +87,33 @@ class Chapter(
     val uuid: String,
     private val title: String?,
     private val label: String,
+    @SerialName("volume_uuid") val volumeUuid: String?,
     @SerialName("release_date") private val releaseDate: String?,
-    @SerialName("free_published_date") val freePublishedDate: String?,
-    @SerialName("free_unpublished_date") val freeUnpublishedDate: String?,
+    @SerialName("free_published_date") private val freePublishedDate: String?,
+    @SerialName("free_unpublished_date") private val freeUnpublishedDate: String?,
     @SerialName("is_upcoming") private val isUpcoming: Boolean?,
 ) {
-    fun toSChapter(slug: String, isLocked: Boolean, dateFormat: SimpleDateFormat): SChapter = SChapter.create().apply {
-        url = "$uuid#$slug"
-        val chapter = "Chapter $label"
+    fun isFree(now: Long) = freePublishedDate != null &&
+        Instant.tryParse(freePublishedDate) <= now &&
+        (freeUnpublishedDate == null || Instant.tryParse(freeUnpublishedDate) > now)
+
+    fun toSChapter(slug: String, volume: Volume?, isLocked: Boolean): SChapter = SChapter.create().apply {
+        url = uuid
+        val chapter = listOfNotNull(volume?.let { "Vol. ${it.orderNumber}" }, "Chapter $label").joinToString(" ")
         val fullTitle = if (title != null) "$chapter - $title" else chapter
         val upcoming = if (isUpcoming == true) "$fullTitle - [Upcoming]" else fullTitle
         name = if (isLocked) "🔒 $upcoming" else upcoming
-        date_upload = dateFormat.tryParse(releaseDate)
+        date_upload = Instant.tryParse(releaseDate)
+        memo = buildJsonObject {
+            put("slug", slug)
+        }
     }
 }
+
+@Serializable
+class Volume(
+    @SerialName("order_number") val orderNumber: Int,
+)
 
 @Serializable
 class UserMangaStatusDto(
@@ -99,6 +121,8 @@ class UserMangaStatusDto(
     val purchasedChapterUuids: List<String> = emptyList(),
     @SerialName("unlocked_chapter_uuids")
     val unlockedChapterUuids: List<String> = emptyList(),
+    @SerialName("purchased_volume_uuids")
+    val purchasedVolumeUuids: List<String> = emptyList(),
 )
 
 @Serializable

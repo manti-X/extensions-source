@@ -1,87 +1,71 @@
 package eu.kanade.tachiyomi.extension.en.omoi
 
-import android.content.SharedPreferences
 import androidx.preference.PreferenceScreen
 import androidx.preference.SwitchPreferenceCompat
-import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.ConfigurableSource
-import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
 import keiyoushi.annotation.Source
+import keiyoushi.network.get
+import keiyoushi.source.KeiSource
 import keiyoushi.utils.asJsoup
 import keiyoushi.utils.firstInstanceOrNull
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
-import keiyoushi.utils.tryParse
-import okhttp3.Headers
+import keiyoushi.utils.string
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.Request
+import okhttp3.OkHttpClient
 import okhttp3.Response
 import java.io.IOException
-import java.text.SimpleDateFormat
-import java.util.Locale
-import java.util.TimeZone
 
 @Source
 abstract class Azuki :
-    HttpSource(),
+    KeiSource(),
     ConfigurableSource {
-    override val supportsLatest = true
+    private val apiUrl = "https://$API_HOST"
+    private val preferences by getPreferencesLazy()
 
-    private val apiUrl = "https://production.api.azuki.co"
-    private val organizationKey = "199e5a19-a236-49f5-81f4-43d4a541748a"
-    private val preferences: SharedPreferences by getPreferencesLazy()
-    private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.ROOT).apply { timeZone = TimeZone.getTimeZone("UTC") }
+    override fun OkHttpClient.Builder.configureClient() = apply {
+        addInterceptor(ImageInterceptor())
+        addInterceptor { chain ->
+            val request = chain.request()
+            if (request.url.host != API_HOST) return@addInterceptor chain.proceed(request)
 
-    override val client = network.client.newBuilder()
-        .addInterceptor(ImageInterceptor())
-        .addInterceptor {
-            val request = it.request()
-            val response = it.proceed(request)
-            if ((response.code == 401 || response.code == 403) && request.url.pathSegments[2].contains("pages") && request.url.host == apiUrl.toHttpUrl().host) {
-                throw IOException("Log in via WebView and purchase this chapter to read.")
-            }
-            if (response.code == 404 && request.url.pathSegments[2].contains("pages") && request.url.host == apiUrl.toHttpUrl().host) {
-                throw IOException("This chapter is not available.")
+            val token = client.cookieJar.loadForRequest(baseUrl.toHttpUrl())
+                .firstOrNull { it.name == "idToken" }?.value
+            val apiRequest = request.newBuilder()
+                .header("Azuki-Organization-Key", ORGANIZATION_KEY)
+                .apply { if (token != null) header("X-User-Token", token) }
+                .build()
+            val response = chain.proceed(apiRequest)
+
+            if (request.url.pathSegments.getOrNull(2) == "pages") {
+                val message = when (response.code) {
+                    401, 403 -> "Log in via WebView and purchase this chapter to read."
+                    404 -> "This chapter is not available."
+                    else -> return@addInterceptor response
+                }
+                response.close()
+                throw IOException(message)
             }
             response
         }
-        .build()
-
-    override fun headersBuilder() = super.headersBuilder()
-        .set("Referer", "$baseUrl/")
-
-    // Popular
-    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/discover?sort=popular&page=$page", headers)
-
-    override fun popularMangaParse(response: Response): MangasPage {
-        val document = response.asJsoup()
-        val mangas = document.select("ol.o-series-card-list li").map {
-            SManga.create().apply {
-                val link = it.selectFirst("a.a-card-link")!!
-                val uuid = link.attr("data-ga-item-id").substringAfter("series-")
-                val slug = (link.absUrl("href")).toHttpUrl().pathSegments.last()
-                setUrlWithoutDomain("$slug#$uuid")
-                title = link.text()
-                thumbnail_url = it.selectFirst("img")?.absUrl("src")
-            }
-        }
-        val hasNextPage = document.selectFirst("a[rel=next]") != null
-        return MangasPage(mangas, hasNextPage)
     }
 
-    // Latest
-    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/discover?sort=recent_series&page=$page", headers)
+    override suspend fun getPopularManga(page: Int): MangasPage = client.get("$baseUrl/discover?sort=popular&page=$page").toMangasPage()
 
-    override fun latestUpdatesParse(response: Response): MangasPage = popularMangaParse(response)
+    override suspend fun getLatestUpdates(page: Int): MangasPage = client.get("$baseUrl/discover?sort=recent_series&page=$page").toMangasPage()
 
-    // Search
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
         val url = "$baseUrl/discover".toHttpUrl().newBuilder().apply {
             addQueryParameter("page", page.toString())
             if (query.isNotBlank()) {
@@ -102,103 +86,90 @@ abstract class Azuki :
             filters.firstInstanceOrNull<GenreFilter>()?.state?.filter { it.state }?.forEach {
                 addQueryParameter("tags[]", it.value)
             }
-        }
-        return GET(url.build(), headers)
+        }.build()
+        return client.get(url).toMangasPage()
     }
 
-    override fun searchMangaParse(response: Response): MangasPage = popularMangaParse(response)
-
-    // Details
-    override fun mangaDetailsRequest(manga: SManga): Request {
-        val slug = "$baseUrl/${manga.url}".toHttpUrl().pathSegments.first()
-        return GET("$apiUrl/manga/slug/$slug/v0", apiHeaders())
-    }
-
-    override fun mangaDetailsParse(response: Response): SManga = response.parseAs<DetailsDto>().toSManga()
-
-    override fun getMangaUrl(manga: SManga): String {
-        val slug = "$baseUrl/${manga.url}".toHttpUrl().pathSegments.first()
-        return "$baseUrl/series/$slug"
-    }
-
-    // Chapters
-    override fun chapterListRequest(manga: SManga): Request {
-        val url = "$baseUrl/${manga.url}".toHttpUrl()
-        val slug = url.pathSegments.first()
-        val uuid = url.fragment
-        val chapterUrl = "$apiUrl/mangas/$uuid/chapters/v4".toHttpUrl().newBuilder()
-            .addQueryParameter("order", "ascending")
-            .addQueryParameter("count", "1000")
-            .fragment(slug)
-            .build()
-        return GET(chapterUrl, apiHeaders())
-    }
-
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val uuid = response.request.url.pathSegments[1]
-        val slug = response.request.url.fragment!!
-        val result = response.parseAs<ChapterDto>()
-        val hideLocked = preferences.getBoolean(HIDE_LOCKED_PREF_KEY, false)
-
-        val unlockedChapterIds = try {
-            val request = GET("$apiUrl/user/mangas/$uuid/v0", apiHeaders())
-            val response = client.newCall(request).execute()
-            val result = response.parseAs<UserMangaStatusDto>()
-            (result.purchasedChapterUuids + result.unlockedChapterUuids).toSet()
-        } catch (_: Exception) {
-            emptySet()
-        }
-
-        return result.chapters.map {
-            val now = System.currentTimeMillis()
-            val isFree = it.freePublishedDate != null &&
-                dateFormat.tryParse(it.freePublishedDate) <= now &&
-                (it.freeUnpublishedDate == null || dateFormat.tryParse(it.freeUnpublishedDate) > now)
-            val isLocked = it.uuid !in unlockedChapterIds && !isFree
-            it to isLocked
-        }
-            .filter { (_, isLocked) -> !hideLocked || !isLocked }
-            .map { (chapter, isLocked) -> chapter.toSChapter(slug, isLocked, dateFormat) }
-            .reversed()
-    }
-
-    override fun getChapterUrl(chapter: SChapter): String {
-        val url = "$baseUrl/${chapter.url}".toHttpUrl()
-        val slug = url.fragment
-        val chapterUuid = url.pathSegments.first()
-        return "$baseUrl/series/$slug/read/$chapterUuid"
-    }
-
-    // Pages
-    override fun pageListRequest(chapter: SChapter): Request {
-        val chapterUuid = "$baseUrl/${chapter.url}".toHttpUrl().pathSegments.first()
-        val url = "$apiUrl/chapters/$chapterUuid/pages/v1"
-        return GET(url, apiHeaders())
-    }
-
-    override fun pageListParse(response: Response): List<Page> {
-        val result = response.parseAs<PageListDto>()
-        return result.data.pages.mapIndexed { i, page ->
-            val highRes = page.image.webp.maxBy { it.width }
-            // This will give the highest possible resolution even if x2400 image doesn't exist.
-            val highResUrl = highRes.url.replace(Regex("""/\d+_"""), "/2400_")
-            Page(i, imageUrl = "$highResUrl?drm=1")
-        }
-    }
-
-    private fun apiHeaders(): Headers {
-        val token = client.cookieJar.loadForRequest(baseUrl.toHttpUrl())
-            .firstOrNull { it.name == "idToken" }?.value
-
-        return headersBuilder()
-            .set("azuki-organization-key", organizationKey)
-            .apply {
-                if (token != null) {
-                    set("x-user-token", token)
+    private fun Response.toMangasPage(): MangasPage {
+        val document = asJsoup()
+        val mangas = document.select("ol.o-series-card-list li").map {
+            SManga.create().apply {
+                val link = it.selectFirst("a.a-card-link")!!
+                url = link.attr("data-ga-item-id").substringAfter("series-")
+                title = link.text()
+                thumbnail_url = it.selectFirst("img")?.absUrl("src")
+                memo = buildJsonObject {
+                    put("slug", link.absUrl("href").toHttpUrl().pathSegments.last())
                 }
             }
-            .build()
+        }
+        val hasNextPage = document.selectFirst("a[rel=next]") != null
+        return MangasPage(mangas, hasNextPage)
     }
+
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate = coroutineScope {
+        val slug = manga.memo["slug"]?.string ?: throw Exception("Migrate this entry from Omoi to Omoi")
+
+        val details = async {
+            if (!fetchDetails) return@async manga
+            client.get("$apiUrl/manga/slug/$slug/v0").parseAs<DetailsDto>().toSManga()
+        }
+
+        val chapterList = async {
+            if (!fetchChapters) return@async chapters
+
+            val unlockedIds = async {
+                val response = client.get("$apiUrl/user/mangas/${manga.url}/v0", ensureSuccess = false)
+                if (response.isSuccessful) {
+                    val status = response.parseAs<UserMangaStatusDto>()
+                    (status.purchasedChapterUuids + status.unlockedChapterUuids + status.purchasedVolumeUuids).toSet()
+                } else {
+                    response.close()
+                    emptySet()
+                }
+            }
+
+            val url = "$apiUrl/mangas/${manga.url}/chapters/v4".toHttpUrl().newBuilder()
+                .addQueryParameter("order", "ascending")
+                .addQueryParameter("count", "1000")
+                .build()
+            val result = client.get(url).parseAs<ChapterDto>()
+
+            val hideLocked = preferences.getBoolean(HIDE_LOCKED_PREF_KEY, false)
+            val unlocked = unlockedIds.await()
+            val now = System.currentTimeMillis()
+            result.chapters
+                .map { it to (it.uuid !in unlocked && it.volumeUuid !in unlocked && !it.isFree(now)) }
+                .filter { (_, isLocked) -> !hideLocked || !isLocked }
+                .map { (chapter, isLocked) -> chapter.toSChapter(slug, result.volumes[chapter.volumeUuid], isLocked) }
+                .reversed()
+        }
+
+        SMangaUpdate(details.await(), chapterList.await())
+    }
+
+    override fun getMangaUrl(manga: SManga): String = "$baseUrl/series/${manga.memo["slug"]!!.string}"
+
+    override fun getChapterUrl(chapter: SChapter): String = "$baseUrl/series/${chapter.memo["slug"]!!.string}/read/${chapter.url}"
+
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        val result = client.get("$apiUrl/chapters/${chapter.url}/pages/v1").parseAs<PageListDto>()
+        return result.data.pages.mapIndexed { i, page ->
+            Page(i, imageUrl = "${page.image.maxResUrl()}#drm")
+        }
+    }
+
+    override fun getFilterList(data: JsonElement?): FilterList = FilterList(
+        SortFilter(),
+        AccessTypeFilter(),
+        PublisherFilter(),
+        GenreFilter(),
+    )
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         SwitchPreferenceCompat(screen.context).apply {
@@ -208,19 +179,9 @@ abstract class Azuki :
         }.also(screen::addPreference)
     }
 
-    // Filters
-    override fun getFilterList(): FilterList = FilterList(
-        Filter.Header("Note: Search and active filters are applied together"),
-        SortFilter(),
-        AccessTypeFilter(),
-        PublisherFilter(),
-        GenreFilter(),
-    )
-
-    // Unsupported
-    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
-
     companion object {
         private const val HIDE_LOCKED_PREF_KEY = "hide_locked"
+        private const val API_HOST = "production.api.azuki.co"
+        private const val ORGANIZATION_KEY = "199e5a19-a236-49f5-81f4-43d4a541748a"
     }
 }
