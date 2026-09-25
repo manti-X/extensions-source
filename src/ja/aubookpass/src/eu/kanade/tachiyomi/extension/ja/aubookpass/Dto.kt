@@ -70,7 +70,7 @@ class CollectionInfo(
 
 @Serializable
 class ContentInfo(
-    private val aid: String,
+    val aid: String,
     private val collectionIndex: Int?,
     private val itemName: String,
     val authorInfo: List<AuthorInfo>?,
@@ -98,17 +98,37 @@ class ContentInfo(
     val isLocked: Boolean
         get() = !isFree && !isPreview
 
-    fun toSChapter(): SChapter = SChapter.create().apply {
-        val lock = if (isLocked) "🔒 " else ""
-        val preview = if (isPreview) "🔒 (Preview) " else ""
+    fun toSChapter(isPurchased: Boolean): SChapter = SChapter.create().apply {
+        val isSample = isPreview && !isPurchased
+        val lock = if (isLocked && !isPurchased) "🔒 " else ""
+        val preview = if (isSample) "🔒 (Preview) " else ""
         url = aid
         name = lock + preview + itemName
         date_upload = dateFormat.tryParseDateTime(orgSalesFrom ?: browserDevice?.salesFrom)
         chapter_number = collectionIndex?.toFloat() ?: -1f
         memo = buildJsonObject {
-            put("isSample", isPreview)
+            put("isSample", isSample)
         }
     }
+}
+
+@Serializable
+class PurchaseResponse(
+    val retrievedData: PurchaseData,
+)
+
+@Serializable
+class PurchaseData(
+    val itemInfo: List<PurchaseInfo>?,
+)
+
+@Serializable
+class PurchaseInfo(
+    val aid: String,
+    private val purchasedFlag: String?,
+) {
+    val isPurchased: Boolean
+        get() = purchasedFlag == "1"
 }
 
 @Serializable

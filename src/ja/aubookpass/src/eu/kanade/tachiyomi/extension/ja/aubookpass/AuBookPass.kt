@@ -19,8 +19,10 @@ import keiyoushi.utils.firstInstanceOrNull
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.json.JsonElement
+import okhttp3.CacheControl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import java.io.IOException
@@ -87,9 +89,9 @@ abstract class AuBookPass :
         chapters: List<SChapter>,
         fetchDetails: Boolean,
         fetchChapters: Boolean,
-    ): SMangaUpdate {
+    ): SMangaUpdate = coroutineScope {
         val hideLocked = preferences.getBoolean(HIDE_LOCKED_PREF_KEY, false)
-        val url = "https://universal-proxy.bookpass.auone.jp/item/4.0/front/collection".toHttpUrl().newBuilder()
+        val url = "https://universal-proxy.bookpass.auone.jp/item/4.0/front/collection/".toHttpUrl().newBuilder()
             .addQueryParameter("accessKey", accessKey)
             .addQueryParameter("collectionId", manga.url)
             .addQueryParameter("limit", "1000")
@@ -97,12 +99,33 @@ abstract class AuBookPass :
             .build()
 
         val items = client.get(url).parseAs<DetailsResponse>().collectionInfo.itemInfo
+        val contents = items.map { it.contentInfo }
 
-        return SMangaUpdate(
+        val isLoggedIn = client.cookieJar.loadForRequest(baseUrl.toHttpUrl()).any { it.name == "VTKT" }
+        val purchased = if (!isLoggedIn) {
+            emptySet()
+        } else {
+            contents.filter { it.isLocked || it.isPreview }.map { it.aid }.chunked(25).map { aids ->
+                async {
+                    val purchaseUrl = "$apiUrl/core/getContentsResults".toHttpUrl().newBuilder()
+                        .addQueryParameter("aid", aids.joinToString(","))
+                        .addQueryParameter("storeType", "BrPc1")
+                        .build()
+                    client.get(purchaseUrl, CacheControl.FORCE_NETWORK, ensureSuccess = false).use { response ->
+                        if (!response.isSuccessful) return@async emptyList()
+                        response.parseAs<PurchaseResponse>().retrievedData.itemInfo.orEmpty()
+                            .filter { it.isPurchased }
+                            .map { it.aid }
+                    }
+                }
+            }.awaitAll().flatten().toSet()
+        }
+
+        SMangaUpdate(
             items.first().toSManga(),
-            items.map { it.contentInfo }
-                .filter { !hideLocked || (!it.isLocked && !it.isPreview) }
-                .map { it.toSChapter() },
+            contents
+                .filter { !hideLocked || it.aid in purchased || (!it.isLocked && !it.isPreview) }
+                .map { it.toSChapter(it.aid in purchased) },
         )
     }
 
