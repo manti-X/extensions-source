@@ -119,6 +119,8 @@ abstract class MusicBookJp :
             ).joinToString("\n\n")
         }
 
+        if (!fetchChapters) return SMangaUpdate(details, chapters)
+
         val chapterList = mutableListOf<SChapter>()
         val hideLocked = preferences.getBoolean(HIDE_LOCKED_PREF_KEY, false)
         while (true) {
