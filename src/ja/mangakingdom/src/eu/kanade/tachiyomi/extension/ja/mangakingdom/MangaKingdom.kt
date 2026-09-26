@@ -162,6 +162,8 @@ abstract class MangaKingdom :
             thumbnail_url = document.selectFirst("img.book-info--img")?.absUrl("src")
         }
 
+        if (!fetchChapters) return@coroutineScope SMangaUpdate(details, chapters)
+
         val hideLocked = preferences.getBoolean(HIDE_LOCKED_PREF_KEY, false)
         val lastPage = document.select(".paging__title .paging--item").maxOfOrNull { it.text().toInt() } ?: 1
         val otherPages = (2..lastPage).map { page ->
