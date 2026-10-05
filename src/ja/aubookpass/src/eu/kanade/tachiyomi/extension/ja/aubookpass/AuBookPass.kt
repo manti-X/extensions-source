@@ -99,8 +99,11 @@ abstract class AuBookPass :
             .build()
 
         val items = client.get(url).parseAs<DetailsResponse>().collectionInfo.itemInfo
-        val contents = items.map { it.contentInfo }
+        val details = items.first().toSManga()
 
+        if (!fetchChapters) return@coroutineScope SMangaUpdate(details, chapters)
+
+        val contents = items.map { it.contentInfo }
         val isLoggedIn = client.cookieJar.loadForRequest(baseUrl.toHttpUrl()).any { it.name == "VTKT" }
         val purchased = if (!isLoggedIn) {
             emptySet()
@@ -122,7 +125,7 @@ abstract class AuBookPass :
         }
 
         SMangaUpdate(
-            items.first().toSManga(),
+            details,
             contents
                 .filter { !hideLocked || it.aid in purchased || (!it.isLocked && !it.isPreview) }
                 .map { it.toSChapter(it.aid in purchased) },
@@ -145,15 +148,23 @@ abstract class AuBookPass :
             .build()
 
         val token = client.get(tokenUrl).parseAs<TokenResponse>()
+        when (token.errorPattern) {
+            null -> {}
+            "overLimitOnNumberOfTerminals" -> throw Exception("Device limit reached. Unregister a device on the website to read.")
+            "viewerMaintenance" -> throw Exception("The viewer is under maintenance.")
+            else -> throw Exception(token.errorPattern)
+        }
+        val authToken = token.authToken!!
+        val uuid = token.uuid!!
         val nmr = randomUUID().toString()
         val viewerHeaders = headersBuilder()
             .set(HEADER_NMR, nmr)
-            .set(HEADER_TOKEN, token.authToken)
+            .set(HEADER_TOKEN, authToken)
             .set(HEADER_USE_CACHE, "false")
-            .set(HEADER_UUID, token.uuid)
+            .set(HEADER_UUID, uuid)
             .build()
 
-        val base = "$VIEWER_URL/${token.iid}"
+        val base = "$VIEWER_URL/${token.iid!!}"
         val metaData = async { client.get("$base/meta", viewerHeaders).parseAs<MetaResponse>().data }
         val cipherKey = async { extractCipherKey(client.get("$base/decrypt", viewerHeaders).use { it.body.string() }) }
 
@@ -166,7 +177,7 @@ abstract class AuBookPass :
                 .addQueryParameter(PARAM_INDICES, index.toString())
                 .addQueryParameter(PARAM_CODE, QUALITY_HIGH)
                 .addQueryParameter(PARAM_ACCEPT, ACCEPT_FORMATS)
-                .fragment("$nmr;${token.authToken};${token.uuid};$maxIndex;$key;${meta.type}")
+                .fragment("$nmr;$authToken;$uuid;$maxIndex;$key;${meta.type}")
                 .build()
             Page(index, imageUrl = url.toString())
         }

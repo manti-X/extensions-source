@@ -55,7 +55,12 @@ class ItemInfo(
             contentInfo.publisherName?.takeIf(String::isNotEmpty)?.let { append("\n\nPublisher: $it") }
             if (contentInfo.isAdult == 1) append("\n\nRating: 18+")
         }
-        genre = contentInfo.bpAssortTagGenreInfo?.joinToString { it.genreName }
+        genre = (
+            contentInfo.bpAssortTagGenreInfo.orEmpty().map { it.genreName } + contentInfo.subGenreInfo.orEmpty()
+                .mapNotNull { it.bpGenreName }
+            )
+            .distinct()
+            .joinToString()
         status = if (collectionInfo.isCompleted == 1) SManga.COMPLETED else SManga.ONGOING
         thumbnail_url = contentInfo.thumbnailFileUri?.replace("http://", "https://")?.replace("_l.jpg", "_xl.jpg")
     }
@@ -79,6 +84,7 @@ class ContentInfo(
     val labelName: String?,
     val magazineName: String?,
     val bpAssortTagGenreInfo: List<BpAssortTagGenreInfo>?,
+    val subGenreInfo: List<SubGenreInfo>?,
     val isAdult: Int?,
     private val priceInclTax: Int?,
     val thumbnailFileUri: String?,
@@ -142,6 +148,11 @@ class BpAssortTagGenreInfo(
 )
 
 @Serializable
+class SubGenreInfo(
+    val bpGenreName: String?,
+)
+
+@Serializable
 class DeviceInfo(
     val bpDeviceId: String,
     val hasSample: Int?,
@@ -157,9 +168,10 @@ class DeviceInfo(
 
 @Serializable
 class TokenResponse(
-    val authToken: String,
-    val uuid: String,
-    val iid: String,
+    val authToken: String?,
+    val uuid: String?,
+    val iid: String?,
+    val errorPattern: String?,
 )
 
 @Serializable
